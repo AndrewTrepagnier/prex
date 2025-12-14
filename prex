@@ -11,6 +11,14 @@ function echo_info() { echo -e "🤖 ${YELLOW}➜ $*${NC}"; }
 function echo_success() { echo -e "🤖 ${GREEN}✔ $*${NC}"; }
 function echo_error() { echo -e "🤖 ${RED}✘ $*${NC}"; }
 
+# Friendly robot face to greet you
+function prex_face() {
+  cat << 'EOF'
+༼ つ ◕_◕ ༽つ
+🤖 prex — your friendly git helper
+EOF
+}
+
 # Detect current branch robustly
 function current_branch() {
   local branch
@@ -84,6 +92,14 @@ EOF
 }
 
 cmd="${1:-}"
+
+# === ADD THIS BLOCK ===
+if [[ -z "$cmd" ]]; then
+  prex_face
+  echo "🤖 prex is on standby. Waiting for your command..."
+  exit 0
+fi
+# ======================
 
 ensure_git_repo
 
@@ -176,4 +192,5 @@ case "$cmd" in
     usage
     ;;
 esac
+
 
