@@ -5,40 +5,67 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 function echo_info() { echo -e "🤖 ${YELLOW}➜ $*${NC}"; }
 function echo_success() { echo -e "🤖 ${GREEN}✔ $*${NC}"; }
 function echo_error() { echo -e "🤖 ${RED}✘ $*${NC}"; }
 
-# Friendly robot face to greet you
+
+
+
 function prex_face() {
   cat << 'EOF'
 ༼ つ ◕_◕ ༽つ
-🤖 prex — your friendly git helper
+🤖 prex — your helpful git bot
 EOF
 }
 
-# Detect current branch robustly
+
+
+
+function prex_success() {
+  echo
+  echo -e "${GREEN}༼ つ ◕_◕ ༽つ${NC}"
+  echo -e "${GREEN}🤖 Done! Resolved rebase conflict and pushed to GitHub.${NC}"
+  echo
+}
+
+
+
+
 function current_branch() {
   local branch
   branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [[ -z "$branch" ]]; then
     if [[ -f .git/rebase-apply/head-name ]]; then
-      branch=$(cat .git/rebase-apply/head-name)
+      branch=$(cat .git/rebase-apply/head-name | sed 's|refs/heads/||')
     elif [[ -f .git/rebase-merge/head-name ]]; then
-      branch=$(cat .git/rebase-merge/head-name)
+      branch=$(cat .git/rebase-merge/head-name | sed 's|refs/heads/||')
     else
-      echo_error "Cannot determine current branch (detached HEAD and no rebase info)."
+      echo_error "Cannot determine current branch."
       exit 1
     fi
   fi
   echo "$branch"
 }
 
+
+
+
 function rebase_in_progress() {
   [[ -d .git/rebase-apply ]] || [[ -d .git/rebase-merge ]]
 }
+
+
+
+
+function has_conflicts() {
+  [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]]
+}
+
+
+
 
 function ensure_git_repo() {
   git rev-parse --is-inside-work-tree &>/dev/null || {
@@ -47,150 +74,241 @@ function ensure_git_repo() {
   }
 }
 
-function check_clean_worktree() {
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo_error "Working directory not clean. Commit or stash your changes first."
-    exit 1
+
+
+
+function show_conflict_help() {
+  echo -e "${YELLOW}"
+  cat << 'EOF'
+┌─────────────────────────────────────────────────┐
+│  CONFLICT MARKERS GUIDE                         │
+├─────────────────────────────────────────────────┤
+│  <<<<<<< HEAD                                   │
+│    (your local changes)                         │
+│  =======                                        │
+│    (remote changes from GitHub)                 │
+│  >>>>>>> commit_hash                            │
+├─────────────────────────────────────────────────┤
+│  1. Keep the code you want                      │
+│  2. Delete ALL marker lines (<<<, ===, >>>)    │
+│  3. Save and quit (:wq)                         │
+└─────────────────────────────────────────────────┘
+EOF
+  echo -e "${NC}"
+}
+
+
+
+
+
+function resolve_conflicts() {
+  while has_conflicts; do
+    local conflicted_file
+    conflicted_file=$(git diff --name-only --diff-filter=U | head -n 1)
+    
+    echo_info "Conflict in: $conflicted_file"
+    show_conflict_help
+    
+    echo_info "Opening in vim... (save and quit when done)"
+    vim "$conflicted_file"
+    
+    # Stage the resolved file
+    git add "$conflicted_file"
+    echo_success "Staged: $conflicted_file"
+  done
+}
+
+
+
+
+
+
+
+function repair() {
+  local branch
+  branch=$(current_branch)
+  
+  # If already in a rebase, jump straight to conflict resolution
+  if rebase_in_progress; then
+    echo_info "Rebase already in progress, resuming..."
+    
+    if has_conflicts; then
+      resolve_conflicts
+    fi
+    
+    # Continue the rebase
+    while rebase_in_progress; do
+      if ! git rebase --continue 2>/dev/null; then
+        if has_conflicts; then
+          resolve_conflicts
+        else
+          echo_error "Rebase failed for unknown reason."
+          exit 1
+        fi
+      fi
+    done
+    
+    echo_info "Pushing to origin/$branch..."
+    git push origin "$branch"
+    prex_success
+    return
+  fi
+  
+  # Fresh repair: fetch and rebase
+  echo_info "Fetching origin..."
+  git fetch origin
+  
+  # Check if we're behind
+  local local_commit remote_commit
+  local_commit=$(git rev-parse HEAD)
+  remote_commit=$(git rev-parse "origin/$branch" 2>/dev/null || echo "")
+  
+  if [[ -z "$remote_commit" ]]; then
+    echo_info "No remote branch origin/$branch found. Nothing to repair."
+    exit 0
+  fi
+  
+  if git merge-base --is-ancestor "origin/$branch" HEAD 2>/dev/null; then
+    echo_success "Already up to date with origin/$branch"
+    echo_info "Pushing to origin/$branch..."
+    git push origin "$branch"
+    echo_success "All synced!"
+    exit 0
+  fi
+  
+  echo_info "Rebasing $branch onto origin/$branch..."
+  
+  # Start rebase, handle conflicts if they occur
+  if ! git rebase "origin/$branch" 2>/dev/null; then
+    if has_conflicts; then
+      echo_info "Conflicts detected! Let's fix them..."
+      resolve_conflicts
+      
+      # Continue rebase after resolving
+      while rebase_in_progress; do
+        if ! git rebase --continue 2>/dev/null; then
+          if has_conflicts; then
+            resolve_conflicts
+          else
+            echo_error "Rebase failed."
+            exit 1
+          fi
+        fi
+      done
+    else
+      echo_error "Rebase failed for unknown reason."
+      exit 1
+    fi
+  fi
+  
+  echo_info "Pushing to origin/$branch..."
+  git push origin "$branch"
+  prex_success
+}
+
+
+
+
+
+
+
+
+function reconnect() {
+  local current_url
+  current_url=$(git remote get-url origin 2>/dev/null || echo "")
+  
+  if [[ -n "$current_url" ]]; then
+    # Origin exists — show it, disconnect, reconnect
+    echo_info "Current remote origin: $current_url"
+    echo
+    echo_info "Disconnecting from origin..."
+    git remote remove origin
+    echo_success "Disconnected from origin."
+    echo
+    echo_info "Reconnecting to origin..."
+    git remote add origin "$current_url"
+    echo_success "Reconnected to: $current_url"
+    echo
+    echo_info "Verifying connection..."
+    if git ls-remote origin &>/dev/null; then
+      echo_success "Connection verified! Remote is reachable."
+    else
+      echo_error "Could not reach remote. Check your URL or network."
+    fi
+  else
+    # No origin — ask politely for URL
+    prex_face
+    echo
+    echo -e "🤖 ${YELLOW}Hmm, I don't see a remote origin set up.${NC}"
+    echo -e "🤖 ${YELLOW}What URL would you like me to connect to?${NC}"
+    echo
+    echo -n "🤖 ➜ Enter remote URL: "
+    read -r new_url
+    
+    if [[ -z "$new_url" ]]; then
+      echo_error "No URL provided. Aborting."
+      exit 1
+    fi
+    
+    echo
+    echo_info "Connecting to origin..."
+    git remote add origin "$new_url"
+    echo_success "Connected to: $new_url"
+    echo
+    echo_info "Verifying connection..."
+    if git ls-remote origin &>/dev/null; then
+      echo_success "Connection verified! Remote is reachable."
+    else
+      echo_error "Could not reach remote. Check your URL or credentials."
+    fi
   fi
 }
 
 function usage() {
-  echo "🤖 prex — personal git helper"
+  prex_face
   echo
   echo "Usage:"
-  echo "  prex rebase        Rebase current branch onto origin"
-  echo "  prex continue      Stage resolved files and continue rebase"
-  echo "  prex abort         Abort rebase in progress"
-  echo "  prex fix           Open first conflicted file for manual fix with instructions"
-  echo "  prex push [branch] Push current or specified branch"
-  echo "  prex sync          Rebase and push if clean"
-  echo "  prex status        Show git status and rebase state"
+  echo "  prex repair      Fix conflicts and sync with GitHub"
+  echo "  prex reconnect   Disconnect and reconnect remote origin"
+  echo "  prex abort       Abort a repair in progress"
   echo
-  exit 1
 }
 
-function show_conflict_instructions() {
-  cat << EOF
-🤖 🚨 Git rebase conflict detected!
 
-Your file contains conflict markers:
 
-  <<<<<<< HEAD
-  =======
-  >>>>>>> commit_hash
 
-Steps to resolve:
 
-1. The conflicted file is opened in vim.
-2. Look for lines starting with <<<<<<<, =======, and >>>>>>>.
-3. Choose which code to keep (above or below =======), or combine them.
-4. Delete all conflict markers (the <<<<<<<, =======, >>>>>>> lines).
-5. Save and quit vim (:wq).
-6. Run 'prex continue' to stage changes and finish the rebase.
 
-EOF
-}
 
+
+# === Main ===
 cmd="${1:-}"
 
-# === ADD THIS BLOCK ===
 if [[ -z "$cmd" ]]; then
   prex_face
-  echo "🤖 prex is on standby. Waiting for your command..."
+  echo "🤖 prex is ready. Run 'prex repair' to fix conflicts."
   exit 0
 fi
-# ======================
 
 ensure_git_repo
 
 case "$cmd" in
-  rebase)
-    check_clean_worktree
-    branch=$(current_branch)
-    echo_info "Fetching origin..."
-    git fetch origin
-
-    echo_info "Rebasing '$branch' onto origin/$branch"
-    git rebase --autostash "origin/$branch"
-    echo_success "Rebase complete."
+  repair)
+    repair
     ;;
-
-  continue)
-    if ! rebase_in_progress; then
-      echo_info "No rebase in progress."
-      exit 0
-    fi
-    echo_info "Staging resolved files..."
-    git add -u
-
-    echo_info "Continuing rebase..."
-    git rebase --continue
-    echo_success "Rebase continued."
+  reconnect)
+    reconnect
     ;;
-
   abort)
-    if ! rebase_in_progress; then
-      echo_info "No rebase in progress to abort."
-      exit 0
-    fi
-    echo_info "Aborting rebase..."
-    git rebase --abort
-    echo_success "Rebase aborted."
-    ;;
-
-  fix)
-    if ! rebase_in_progress; then
-      echo_info "No rebase in progress."
-      exit 0
-    fi
-
-    conflicted_files=$(git diff --name-only --diff-filter=U)
-    if [[ -z "$conflicted_files" ]]; then
-      echo_info "No conflicted files detected."
-      exit 0
-    fi
-
-    first_file=$(echo "$conflicted_files" | head -n 1)
-    echo_info "Opening conflicted file '$first_file' for manual resolution..."
-    show_conflict_instructions
-    vim "$first_file"
-    ;;
-
-  push)
-    branch="${2:-$(current_branch)}"
-    echo_info "Pushing branch '$branch'..."
-    git push origin "$branch"
-    echo_success "Push complete."
-    ;;
-
-  sync)
-    check_clean_worktree
-    branch=$(current_branch)
-    echo_info "Fetching origin..."
-    git fetch origin
-
-    echo_info "Rebasing '$branch' onto origin/$branch"
-    git rebase --autostash "origin/$branch"
-
-    echo_info "Pushing branch '$branch'..."
-    git push origin "$branch"
-    echo_success "Sync complete."
-    ;;
-
-  status)
-    echo_info "Git status:"
-    git status
-
     if rebase_in_progress; then
-      echo_info "A rebase is in progress."
+      echo_info "Aborting rebase..."
+      git rebase --abort
+      echo_success "Aborted. Back to where you started."
     else
-      echo_info "No rebase in progress."
+      echo_info "Nothing to abort."
     fi
     ;;
-
   *)
     usage
     ;;
 esac
-
-
