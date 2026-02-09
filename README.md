@@ -24,6 +24,7 @@ The premises of prex actually stems from a more advanced CLI-style triage bot th
 | `prex repair` | Fetch, rebase onto origin, resolve conflicts, push |
 | `prex reconnect` | Disconnect and reconnect remote origin |
 | `prex abort` | Abort rebase in progress |
+| `prex scratch` | Disconnects venv and reconnects to .venv |
 
 ## Workflow
 
