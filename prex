@@ -264,6 +264,41 @@ function reconnect() {
   fi
 }
 
+
+function scratch() {
+  # Deactivate current venv if active (only works if deactivate function exists)
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    if declare -f deactivate > /dev/null 2>&1; then
+      echo_info "Deactivating current virtualenv: $VIRTUAL_ENV"
+      deactivate
+      echo_success "Deactivated."
+    else
+      echo_info "Virtualenv detected but deactivate function not available."
+      echo_info "You may need to run 'deactivate' manually first."
+    fi
+  fi
+  
+  # Create .venv if it doesn't exist
+  if [[ ! -d ".venv" ]]; then
+    echo_info "Creating new virtualenv: .venv"
+    python3 -m venv .venv
+    echo_success "Created .venv"
+  else
+    echo_info ".venv already exists."
+  fi
+  
+  # Activate .venv
+  if [[ -f ".venv/bin/activate" ]]; then
+    echo_info "Activating .venv..."
+    source .venv/bin/activate
+    echo_success "Activated .venv"
+    echo_info "Python: $(which python)"
+  else
+    echo_error "Failed to find .venv/bin/activate"
+    return 1
+  fi
+}
+
 function usage() {
   prex_face
   echo
@@ -271,6 +306,7 @@ function usage() {
   echo "  prex repair      Fix conflicts and sync with GitHub"
   echo "  prex reconnect   Disconnect and reconnect remote origin"
   echo "  prex abort       Abort a repair in progress"
+  echo "  prex scratch     Deactivate current venv and activate .venv"
   echo
 }
 
@@ -290,7 +326,10 @@ if [[ -z "$cmd" ]]; then
   exit 0
 fi
 
-ensure_git_repo
+# Only require git repo for git-related commands
+if [[ "$cmd" != "scratch" ]]; then
+  ensure_git_repo
+fi
 
 case "$cmd" in
   repair)
@@ -307,6 +346,9 @@ case "$cmd" in
     else
       echo_info "Nothing to abort."
     fi
+    ;;
+  scratch)
+    scratch
     ;;
   *)
     usage
